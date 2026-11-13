@@ -44,7 +44,7 @@ graph TD
 ### 1. Tauri Core & IPC Layer (`src-tauri/src/lib.rs`)
 
 * **Windowless Entry**: On Windows, compiled with `#![windows_subsystem = "windows"]` to prevent background console allocation.
-* **Single-Instance Enforcement**: On Windows, uses a Win32 mutex `Global\SpecterSingleInstanceMutex` to bring existing instances to the foreground and prevent duplicate FFmpeg capture hooks.
+* **Single-Instance Enforcement**: On Windows, uses a Win32 mutex `Local\dev.specter.single_instance.lock` to bring existing instances to the foreground and prevent duplicate FFmpeg capture hooks.
 * **Platform Dragging**: On Windows, registers `app_start_drag` delegating to `ReleaseCapture()` and `SendMessageW(hwnd, WM_SYSCOMMAND, 0xF012, 0)` to guarantee drag response. Cross-platform fallback uses standard Tauri window dragging.
 
 ### 2. Capture Engine (`src-tauri/src/capture.rs`)

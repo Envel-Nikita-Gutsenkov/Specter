@@ -95,7 +95,6 @@ export default function MainPage({
           if (!continueRec) {
             onBufferingChange(false);
             onStatsChange({ used_mb: 0, limit_mb: settings.ram_limit_mb, duration_seconds: 0, is_recording_to_disk: false });
-            setMockPct(0);
           }
         }
       } catch (e) {

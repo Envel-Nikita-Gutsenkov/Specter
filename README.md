@@ -137,7 +137,7 @@ Settings are stored persistently at `%APPDATA%\specter\config.json`. Key paramet
 | `codec` | `"h264_nvenc"` | `h264_nvenc`, `hevc_nvenc`, `h264_amf`, `h264_qsv`, `libx264` | Encoder backend. |
 | `bitrate_mbps` | `null` | `1` – `50` (or `null` for auto) | Target bitrate in Mbps. |
 | `output_folder` | `""` | Any valid directory | Default destination: `%USERPROFILE%\Videos\Specter`. |
-| `capture_source` | `"screen:0"` | `screen:N` or `window:PID:TITLE` | Display index or target window title. |
+| `capture_source` | `"screen:0"` | `screen:N` or `window:PID` | Display index or target process ID. |
 | `capture_cursor` | `false` | `true`, `false` | Capture mouse pointer (false prevents cursor flicker). |
 | `start_minimized` | `false` | `true`, `false` | Launch directly to system tray. |
 

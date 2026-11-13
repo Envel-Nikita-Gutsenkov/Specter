@@ -22,7 +22,7 @@ export async function saveClip(continueRecording: boolean): Promise<string> {
 
 export async function getBufferStats(): Promise<BufferStats> {
   if (!isTauri()) {
-    return { used_mb: 0, limit_mb: 500, duration_seconds: 0 };
+    return { used_mb: 0, limit_mb: 500, duration_seconds: 0, is_recording_to_disk: false };
   }
   return await invoke<BufferStats>("get_buffer_stats");
 }

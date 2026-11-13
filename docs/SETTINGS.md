@@ -19,12 +19,12 @@ All fields are protected by `#[serde(default)]` in `src-tauri/src/settings.rs` t
 | `fps` | `number` | `60` | `30`, `60`, `120`, `144` | Video capture frame rate. |
 | `codec` | `string` | `"h264_nvenc"` | `"h264_nvenc"`, `"hevc_nvenc"`, `"h264_amf"`, `"hevc_amf"`, `"h264_qsv"`, `"libx264"` | Video encoder backend. |
 | `bitrate_mbps` | `number \| null` | `null` | `1` – `50` (or `null` for auto) | Constant / target video encoding bitrate in megabits. |
-| `audio` | `string` | `"none"` | `"none"`, `"desktop"`, `"mic"`, `"both"` | Audio input capture source. |
+| `audio` | `string` | `"none"` | `"none"`, `"loopback"` | Audio input: `loopback` captures system (desktop) audio via WASAPI/PulseAudio. |
 | `output_folder` | `string` | `""` | Any valid Windows directory | Folder where final MP4 clips are saved (defaults to `Videos/Specter`). |
 | `hotkey_toggle_buffer` | `string` | `"Alt+Shift+F8"` | Keyboard combo | Global hotkey to start or stop the replay buffer engine. |
 | `hotkey_save_continue` | `string` | `"F9"` | Keyboard combo | Save buffer / start continuous disk recording. When recording, stops & saves. |
 | `hotkey_save_stop` | `string` | `"F10"` | Keyboard combo | Save current replay / recording and immediately terminate buffer. |
-| `capture_source` | `string` | `"screen:0"` | `"screen:N"` or `"window:PID:TITLE"` | Specific monitor index or target application window. |
+| `capture_source` | `string` | `"screen:0"` | `"screen:N"` or `"window:PID"` | Specific monitor index or target application window (by process ID). |
 | `capture_cursor` | `boolean` | `false` | `true`, `false` | Capture mouse cursor on video. Keep disabled to avoid Windows DWM cursor flicker. |
 | `start_minimized` | `boolean` | `false` | `true`, `false` | Launch directly to the Windows system tray. |
 | `show_overlay` | `boolean` | `true` | `true`, `false` | Display always-on-top HUD widget. |

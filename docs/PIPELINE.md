@@ -97,5 +97,5 @@ ffmpeg -f gdigrab -framerate 30 -i desktop \
 
 1. **Entire Monitor (`screen:N`)**:
    Enumerated through Win32 `EnumDisplayMonitors` + `GetMonitorInfoW`. Captures the desktop coordinate bounds `(left, top, width, height)` with `-offset_x` and `-offset_y`.
-2. **Specific Application Window (`window:PID:TITLE`)**:
-   Enumerated through Win32 `EnumWindows` + `IsWindowVisible` + `GetWindowTextW`. Captures window targets by window title via `-i title="<window title>"`.
+2. **Specific Application Window (`window:PID`)**:
+   Enumerated through Win32 `EnumWindows` + `IsWindowVisible` + `GetWindowTextW`. The PID resolves to the matching window title, which is then passed to FFmpeg via `-i title="<window title>"`.
