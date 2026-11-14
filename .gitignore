@@ -1,0 +1,22 @@
+# Node dependencies
+node_modules/
+dist/
+
+# Rust build target
+src-tauri/target/
+**/target/
+
+# Logs and temp files
+*.log
+*.tmp
+*.mp4
+*.exe
+!src-tauri/icons/*.ico
+
+# Environment and IDE
+.env
+.env.*
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
