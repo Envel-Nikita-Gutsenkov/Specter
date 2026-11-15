@@ -21,7 +21,7 @@ one version still loads in another: missing keys fall back to their defaults.
 | `fps` | `number` | `60` | `30`, `60` | Buffer frame rate. |
 | `codec` | `string` | `"h264_nvenc"` | Settings UI: `"h264_nvenc"`, `"hevc_nvenc"`, `"libx264"`. Editable in the file: `"h264_amf"`, `"hevc_amf"`, `"h264_qsv"`, `"hevc_qsv"`, `"libx265"` | Encoder backend. |
 | `bitrate_mbps` | `number \| null` | `null` | `1` – `100`, or `null` | Target video bitrate; `null` derives it from resolution, FPS and quality preset. |
-| `audio` | `string` | `"none"` | `"none"`, `"loopback"` | Buffer audio. `loopback` captures system audio through a DirectShow loopback device. |
+| `audio` | `string` | `"none"` | `"none"`, `"loopback"` | Buffer audio. `loopback` records the system output through WASAPI. |
 | `output_folder` | `string` | `<Videos>\Specter` | Any directory | Where final clips are saved. Resolved from the user's Videos folder on first launch. |
 | `hotkey_toggle_buffer` | `string` | `"Alt+Shift+F8"` | Keyboard combo | Start or stop the replay buffer. |
 | `hotkey_save_continue` | `string` | `"F9"` | Keyboard combo | Flush the buffer and keep recording to disk. While recording: stop and save. |

@@ -3,8 +3,14 @@ use anyhow::{bail, Context, Result};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+#[cfg(windows)]
+use crate::loopback::{self, SystemAudioLoopback};
+
 pub struct ProcessSupervisor {
     child: Option<Child>,
+    /// Loopback capture feeding the replay buffer's system audio track.
+    #[cfg(windows)]
+    system_audio: Option<SystemAudioLoopback>,
 }
 
 /// Translates the user-facing speed/quality preference into the preset name of
@@ -56,7 +62,11 @@ fn tail_log(text: &str, max_chars: usize) -> String {
 
 impl ProcessSupervisor {
     pub fn new() -> Self {
-        Self { child: None }
+        Self {
+            child: None,
+            #[cfg(windows)]
+            system_audio: None,
+        }
     }
 
     pub fn resolve_ffmpeg_binary() -> std::path::PathBuf {
@@ -88,7 +98,20 @@ impl ProcessSupervisor {
     }
 
     pub fn spawn(settings: &Settings) -> Result<(Self, std::process::ChildStdout)> {
-        let args = Self::build_ffmpeg_args(settings);
+        // System audio is captured over WASAPI and arrives as raw PCM through a
+        // named pipe; the pipe has to exist before FFmpeg opens its inputs.
+        #[cfg(windows)]
+        let system_audio = if settings.audio == "loopback" {
+            Some(SystemAudioLoopback::start().context("Failed to capture system audio")?)
+        } else {
+            None
+        };
+        #[cfg(windows)]
+        let loopback_path = system_audio.as_ref().map(|capture| capture.path());
+        #[cfg(not(windows))]
+        let loopback_path: Option<&str> = None;
+
+        let args = Self::build_ffmpeg_args_with_audio(settings, loopback_path);
 
         let log_file = std::env::temp_dir().join("specter_ffmpeg.log");
         let stderr_dest = match std::fs::File::create(&log_file) {
@@ -126,13 +149,24 @@ impl ProcessSupervisor {
             );
         }
 
-        Ok((Self { child: Some(child) }, stdout))
+        Ok((
+            Self {
+                child: Some(child),
+                #[cfg(windows)]
+                system_audio,
+            },
+            stdout,
+        ))
     }
 
     pub fn terminate(&mut self) {
         if let Some(mut child) = self.child.take() {
             let _ = child.kill();
             let _ = child.wait();
+        }
+        #[cfg(windows)]
+        {
+            self.system_audio.take();
         }
     }
 
@@ -147,6 +181,13 @@ impl ProcessSupervisor {
     }
 
     pub fn build_ffmpeg_args(s: &Settings) -> Vec<String> {
+        Self::build_ffmpeg_args_with_audio(s, None)
+    }
+
+    /// `loopback_path` is the named pipe that carries the WASAPI loopback audio.
+    /// FFmpeg cannot open the system audio device itself, so without a path the
+    /// replay buffer records video only.
+    pub fn build_ffmpeg_args_with_audio(s: &Settings, loopback_path: Option<&str>) -> Vec<String> {
         let fps_str = s.fps.to_string();
         let scale_filter = match s.resolution.as_str() {
             "1080p" => Some("scale=1920:1080"),
@@ -168,12 +209,16 @@ impl ProcessSupervisor {
             // The audio device is opened before the capture input: a stalled audio
             // read in FFmpeg's demux loop would otherwise cost most of the desktop
             // frames, because `ddagrab` only exposes the newest one.
-            if s.audio == "loopback" {
+            if let Some(path) = loopback_path.filter(|_| s.audio == "loopback") {
                 args.extend([
                     "-f".to_string(),
-                    "dshow".to_string(),
+                    "s16le".to_string(),
+                    "-ar".to_string(),
+                    loopback::SAMPLE_RATE.to_string(),
+                    "-ac".to_string(),
+                    loopback::CHANNELS.to_string(),
                     "-i".to_string(),
-                    r#"audio=WASAPI loopback"#.to_string(),
+                    path.to_string(),
                 ]);
             }
 
@@ -209,11 +254,23 @@ impl ProcessSupervisor {
             args.extend(["-i".to_string(), display]);
         }
 
-        if s.audio == "loopback" {
-            // The audio input is first, so the capture input is index 1.
+        // Every audio input precedes the capture input, so the capture index is the
+        // number of audio tracks opened above.
+        #[cfg(windows)]
+        let audio_tracks = if s.audio == "loopback" && loopback_path.is_some() {
+            1
+        } else {
+            0
+        };
+        #[cfg(not(windows))]
+        let audio_tracks = if s.audio == "loopback" { 1 } else { 0 };
+        if s.audio == "loopback" && audio_tracks == 0 {
+            args.extend(["-an".to_string()]);
+        }
+        if audio_tracks > 0 {
             args.extend([
                 "-map".to_string(),
-                "1:v".to_string(),
+                format!("{}:v", audio_tracks),
                 "-map".to_string(),
                 "0:a".to_string(),
             ]);
@@ -317,7 +374,7 @@ impl ProcessSupervisor {
             args.extend(["-vf".to_string(), filters.join(",")]);
         }
 
-        if s.audio == "loopback" {
+        if audio_tracks > 0 {
             args.extend([
                 "-acodec".to_string(),
                 "aac".to_string(),

@@ -1,5 +1,6 @@
 pub mod capture;
 pub mod hotkeys;
+pub mod loopback;
 pub mod math;
 pub mod recorder;
 pub mod ring_buffer;

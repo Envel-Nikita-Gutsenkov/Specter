@@ -76,4 +76,4 @@ graph TD
 * Emits `recorder-level` (normalized 0..1 RMS) and `recorder-status` events for the live waveform and title bar indicator.
 * Emits `recorder-warning` when FFmpeg's `-progress` stream shows the encoder falling behind real time, so a saturated GPU encoder never turns a recording into a silent slideshow.
 * Audio graph: one source uses `-af astats/ametadata`; microphone + system use `-filter_complex amix` so both tracks share a single metered output.
-* Device discovery parses `ffmpeg -list_devices true -f dshow` and identifies loopback devices by name (`Stereo Mix`, `CABLE Output`, `virtual-audio-capturer`, ...).
+* Device discovery parses `ffmpeg -list_devices true -f dshow` for microphone names only. System audio is not a capture device: FFmpeg has no Windows loopback source, so `src-tauri/src/loopback.rs` captures the default playback device over WASAPI and streams raw `s16le` 48 kHz stereo PCM into a named pipe that FFmpeg opens as its first input. Silence is written whenever the endpoint is idle so the audio stream never stalls the muxer.

@@ -116,7 +116,8 @@ keys:
 * **Presets** — resolution, FPS and quality can be changed without leaving the page, and
   the choice is saved immediately.
 * **Audio** — `none`, `mic`, `system` (loopback) or `both` (mixed with `amix`). System
-  audio needs Stereo Mix or a virtual audio cable.
+  audio is captured over WASAPI, so it records exactly what the default playback device
+  is playing; no Stereo Mix or virtual cable is required.
 * **Meter** — while the tab is open a small FFmpeg process measures the selected
   microphone and the level bar responds before recording starts. It is stopped before
   the recorder opens the same device.

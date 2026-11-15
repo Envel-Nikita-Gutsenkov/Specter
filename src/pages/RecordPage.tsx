@@ -66,7 +66,6 @@ const CODECS = [
 ];
 
 const WAVE_BARS = 110;
-const LOOPBACK_RE = /stereo mix|loopback|what u hear|cable output|virtual-audio/i;
 
 function formatDuration(secs: number): string {
   const total = Math.max(0, Math.floor(secs));
@@ -608,7 +607,6 @@ export default function RecordPage({
     [draft.resolution, draft.fps, draft.quality]
   );
 
-  const hasLoopback = useMemo(() => devices.some((d) => LOOPBACK_RE.test(d)), [devices]);
   const audioRequiredButMissing = draft.mode === "audio" && draft.audio === "none";
   const canStart =
     !busy && !audioRequiredButMissing && (!needsMic(draft.audio) || devices.length > 0);
@@ -949,9 +947,6 @@ export default function RecordPage({
               ))}
             </select>
           </div>
-        )}
-        {needsSystem(draft.audio) && !hasLoopback && (
-          <div className="rec-note">No loopback device found — enable Stereo Mix</div>
         )}
       </div>
 

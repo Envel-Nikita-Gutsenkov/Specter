@@ -10,6 +10,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 
+use crate::loopback::{self, SystemAudioLoopback};
 use crate::settings::Settings;
 use crate::storage::StorageManager;
 use crate::supervisor::ProcessSupervisor;
@@ -86,6 +87,9 @@ pub struct RecorderEngine {
     started_at: Mutex<Option<f64>>,
     mode: Mutex<String>,
     level: Arc<Mutex<f32>>,
+    /// The WASAPI loopback capture feeding the system audio track. It has to stay
+    /// alive for as long as FFmpeg reads from its pipe.
+    system_audio: Mutex<Option<SystemAudioLoopback>>,
     /// True if any segment carried a real audio source. Video segments always
     /// include an (possibly silent) audio stream so they concatenate cleanly; if
     /// no real source was ever chosen, that silent track is stripped on stop.
@@ -104,6 +108,7 @@ impl RecorderEngine {
             started_at: Mutex::new(None),
             mode: Mutex::new(String::new()),
             level: Arc::new(Mutex::new(0.0)),
+            system_audio: Mutex::new(None),
             had_audio: Mutex::new(false),
         }
     }
@@ -134,7 +139,12 @@ impl RecorderEngine {
         let temp_ext = if config.mode == "audio" { "mka" } else { "mkv" };
         let temp_path = folder.join(segment_file_name(&base_name, temp_ext, 0));
 
-        self.launch(config, &temp_path, app.clone())?;
+        let (child, reader, system_audio) =
+            Self::spawn(config, &temp_path, app.clone(), Arc::clone(&self.level))?;
+
+        *self.child.lock().unwrap() = Some(child);
+        *self.reader.lock().unwrap() = reader;
+        *self.system_audio.lock().unwrap() = system_audio;
 
         *self.segments.lock().unwrap() = Vec::new();
         *self.current_temp.lock().unwrap() = Some(temp_path);
@@ -172,8 +182,9 @@ impl RecorderEngine {
             .unwrap_or_else(|| Path::new("."))
             .join(segment_file_name(&base_name, temp_ext, next_index));
 
-        let (child, reader) =
+        let (child, reader, system_audio) =
             Self::spawn(config, &temp_path, app.clone(), Arc::clone(&self.level))?;
+        *self.system_audio.lock().unwrap() = system_audio;
 
         // The new source is live: stop the previous process and keep its output as
         // one more segment for the final concatenation.
@@ -201,21 +212,35 @@ impl RecorderEngine {
         Ok(())
     }
 
-    fn launch(&self, config: &RecordingConfig, temp_path: &Path, app: AppHandle) -> Result<()> {
-        let (child, reader) = Self::spawn(config, temp_path, app, Arc::clone(&self.level))?;
-        *self.child.lock().unwrap() = Some(child);
-        *self.reader.lock().unwrap() = reader;
-        Ok(())
-    }
-
     fn spawn(
         config: &RecordingConfig,
         temp_path: &Path,
         app: AppHandle,
         level: Arc<Mutex<f32>>,
-    ) -> Result<(Child, Option<JoinHandle<()>>)> {
+    ) -> Result<(Child, Option<JoinHandle<()>>, Option<SystemAudioLoopback>)> {
         let audio_enabled = is_audio_enabled(&config.audio);
-        let args = Self::build_args(config, temp_path)?;
+
+        // System audio never comes from a capture device: FFmpeg has no Windows
+        // loopback source, so it is captured over WASAPI (see `loopback`) and fed
+        // to FFmpeg as raw PCM through a named pipe. The pipe is created before
+        // FFmpeg starts, which is also why it is opened as the first input.
+        let (want_mic, want_system) = audio_sources(&config.audio);
+        let mic_device = if want_mic {
+            Some(resolve_mic_device(&config.mic_device)?)
+        } else {
+            None
+        };
+        let system_audio = if want_system {
+            Some(SystemAudioLoopback::start().context("Failed to capture system audio")?)
+        } else {
+            None
+        };
+        let args = Self::build_args_with_devices(
+            config,
+            temp_path,
+            mic_device.as_deref(),
+            system_audio.as_ref().map(|loopback| loopback.path()),
+        )?;
 
         let log_file = std::env::temp_dir().join("specter_recorder_ffmpeg.log");
         let stderr_dest = if audio_enabled {
@@ -311,7 +336,7 @@ impl RecorderEngine {
             }
         }
 
-        Ok((child, meter))
+        Ok((child, meter, system_audio))
     }
 
     /// Reads FFmpeg's `-progress` stream and warns when the encoder cannot keep up
@@ -445,6 +470,8 @@ impl RecorderEngine {
                 self.segments.lock().unwrap().push(temp);
             }
         }
+        // FFmpeg is gone, so the loopback pipe can be closed as well.
+        self.system_audio.lock().unwrap().take();
         Ok(())
     }
 
@@ -519,33 +546,10 @@ impl RecorderEngine {
         }
     }
 
-    pub fn build_args(config: &RecordingConfig, temp_path: &Path) -> Result<Vec<String>> {
-        let audio_enabled = is_audio_enabled(&config.audio);
-        if config.mode == "audio" && !audio_enabled {
-            bail!("Audio-only recording requires a microphone or system audio source");
-        }
-
-        let (mic, system) = audio_sources(&config.audio);
-        let mic_device = if mic {
-            Some(resolve_mic_device(&config.mic_device)?)
-        } else {
-            None
-        };
-        let system_device = if system {
-            Some(resolve_system_device()?)
-        } else {
-            None
-        };
-
-        Self::build_args_with_devices(
-            config,
-            temp_path,
-            mic_device.as_deref(),
-            system_device.as_deref(),
-        )
-    }
-
     /// Pure argument builder used by the public API and unit tests.
+    ///
+    /// `system_device` is the loopback pipe path (see `crate::loopback`), not a
+    /// DirectShow device name.
     pub fn build_args_with_devices(
         config: &RecordingConfig,
         temp_path: &Path,
@@ -758,6 +762,7 @@ impl Drop for RecorderEngine {
         if let Some(mut child) = self.child.lock().unwrap().take() {
             shutdown_process(&mut child);
         }
+        let _ = self.system_audio.lock().unwrap().take();
     }
 }
 
@@ -828,6 +833,9 @@ fn meter_level(db: f32) -> f32 {
 /// without committing to a full capture.
 static IDLE_METER: Mutex<Option<Child>> = Mutex::new(None);
 
+/// Loopback capture owned by the idle meter, when system audio is being metered.
+static IDLE_METER_LOOPBACK: Mutex<Option<SystemAudioLoopback>> = Mutex::new(None);
+
 /// FFmpeg arguments for the standalone level meter.
 fn idle_meter_args(device: &str) -> Vec<String> {
     let mut args: Vec<String> = vec!["-hide_banner".to_string(), "-nostdin".to_string()];
@@ -849,6 +857,9 @@ pub fn stop_idle_meter() {
             let _ = child.wait();
         }
     }
+    if let Ok(mut guard) = IDLE_METER_LOOPBACK.lock() {
+        guard.take();
+    }
 }
 
 /// Starts a low-cost microphone/loopback level monitor that emits
@@ -857,10 +868,16 @@ pub fn start_idle_meter(audio: &str, mic_device: &str, app: AppHandle) -> Result
     stop_idle_meter();
 
     let (want_mic, want_system) = audio_sources(audio);
+    // Mic and system audio cannot be metered by one input, so the microphone wins
+    // when both are selected — it is the source the user can still adjust.
+    let mut loopback_handle: Option<SystemAudioLoopback> = None;
     let device = if want_mic {
         resolve_mic_device(mic_device)?
     } else if want_system {
-        resolve_system_device()?
+        let capture = SystemAudioLoopback::start().context("Failed to capture system audio")?;
+        let path = capture.path().to_string();
+        loopback_handle = Some(capture);
+        path
     } else {
         bail!("Select a microphone or system audio source first")
     };
@@ -913,6 +930,9 @@ pub fn start_idle_meter(audio: &str, mic_device: &str, app: AppHandle) -> Result
 
     if let Ok(mut guard) = IDLE_METER.lock() {
         *guard = Some(child);
+    }
+    if let Ok(mut guard) = IDLE_METER_LOOPBACK.lock() {
+        *guard = loopback_handle;
     }
     Ok(())
 }
@@ -1231,6 +1251,20 @@ fn append_video_input(args: &mut Vec<String>, _config: &RecordingConfig, fps: &s
 
 #[cfg(windows)]
 fn audio_input_args(device: &str) -> Vec<String> {
+    if loopback::is_pipe_path(device) {
+        // Raw PCM from the WASAPI loopback thread: the stream has no container and
+        // no timestamps of its own, so the format is declared explicitly.
+        return vec![
+            "-f".to_string(),
+            "s16le".to_string(),
+            "-ar".to_string(),
+            loopback::SAMPLE_RATE.to_string(),
+            "-ac".to_string(),
+            loopback::CHANNELS.to_string(),
+            "-i".to_string(),
+            device.to_string(),
+        ];
+    }
     vec![
         "-f".to_string(),
         "dshow".to_string(),
@@ -1269,35 +1303,6 @@ fn resolve_mic_device(explicit: &str) -> Result<String> {
     } else {
         trimmed.to_string()
     })
-}
-
-#[cfg(windows)]
-fn resolve_system_device() -> Result<String> {
-    enumerate_audio_devices()
-        .into_iter()
-        .find(|name| is_loopback_name(name))
-        .context(
-            "No system audio loopback device found. Enable 'Stereo Mix' or install a virtual audio cable.",
-        )
-}
-
-#[cfg(not(windows))]
-fn resolve_system_device() -> Result<String> {
-    Ok("default".to_string())
-}
-
-fn is_loopback_name(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    [
-        "stereo mix",
-        "loopback",
-        "virtual-audio-capturer",
-        "what u hear",
-        "wave out mix",
-        "cable output",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
 }
 
 #[cfg(windows)]
@@ -1374,6 +1379,132 @@ mod tests {
             Some("Test Loopback"),
         )
         .expect("argument builder must succeed")
+    }
+
+    #[test]
+    fn test_system_audio_pipe_is_opened_as_raw_pcm() {
+        // System audio is not a capture device: it arrives as s16le PCM over the
+        // loopback named pipe, so FFmpeg needs the format declared up front.
+        let mut config = base_config();
+        config.audio = "system".to_string();
+        let pipe = r"\\.\pipe\specter-audio-test-0";
+        let args = RecorderEngine::build_args_with_devices(
+            &config,
+            Path::new("/tmp/specter-test.mp4.tmp"),
+            None,
+            Some(pipe),
+        )
+        .expect("argument builder must succeed");
+
+        let expected: Vec<String> = [
+            "-f",
+            "s16le",
+            "-ar",
+            &crate::loopback::SAMPLE_RATE.to_string(),
+            "-ac",
+            &crate::loopback::CHANNELS.to_string(),
+            "-i",
+            pipe,
+        ]
+        .iter()
+        .map(|value| value.to_string())
+        .collect();
+        assert!(
+            args.windows(expected.len()).any(|w| w == expected),
+            "loopback input must be declared as raw PCM: {:?}",
+            args
+        );
+        assert!(!args.iter().any(|arg| arg.contains("dshow")));
+        assert!(args.contains(&"1:v".to_string()));
+    }
+
+    #[test]
+    fn test_both_sources_keep_pipe_and_device_in_order() {
+        let mut config = base_config();
+        config.audio = "both".to_string();
+        let pipe = r"\\.\pipe\specter-audio-test-1";
+        let args = RecorderEngine::build_args_with_devices(
+            &config,
+            Path::new("/tmp/specter-test.mp4.tmp"),
+            Some("Test Microphone"),
+            Some(pipe),
+        )
+        .expect("argument builder must succeed");
+
+        let mic = args
+            .iter()
+            .position(|arg| arg == "audio=Test Microphone")
+            .expect("microphone input must be present");
+        let loopback = args
+            .iter()
+            .position(|arg| arg == pipe)
+            .expect("loopback input must be present");
+        let video = args
+            .iter()
+            .position(|arg| arg.contains("ddagrab") || arg.contains("gdigrab"))
+            .expect("video input must be present");
+        assert!(mic < loopback && loopback < video);
+        assert!(args.contains(&"2:v".to_string()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "starts a real FFmpeg capture for a few seconds"]
+    fn test_system_audio_pipe_feeds_ffmpeg() {
+        // End-to-end check of the loopback path: WASAPI capture -> named pipe ->
+        // FFmpeg. Runs with a synthetic video source so it only exercises audio.
+        let capture = SystemAudioLoopback::start().expect("loopback capture must start");
+        let output = std::env::temp_dir().join("specter-loopback-test.mkv");
+        let _ = fs::remove_file(&output);
+
+        let mut cmd = Command::new(ProcessSupervisor::resolve_ffmpeg_binary());
+        cmd.args(capture.input_args());
+        cmd.args([
+            "-f",
+            "lavfi",
+            "-i",
+            "color=c=black:s=320x240:r=30",
+            "-map",
+            "1:v",
+            "-map",
+            "0:a",
+            "-t",
+            "4",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-c:a",
+            "aac",
+            "-y",
+        ]);
+        cmd.arg(&output)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+
+        let status = cmd.status().expect("ffmpeg must run");
+        drop(capture);
+        assert!(status.success(), "ffmpeg failed to read the loopback pipe");
+
+        let probe = Command::new(ProcessSupervisor::resolve_ffmpeg_binary())
+            .args([
+                "-hide_banner",
+                "-i",
+                &output.to_string_lossy().to_string(),
+                "-f",
+                "null",
+                "-",
+            ])
+            .output()
+            .expect("ffmpeg must run");
+        let log = String::from_utf8_lossy(&probe.stderr).to_string();
+        assert!(
+            log.contains("Audio: aac"),
+            "the recording must contain an audio track: {}",
+            tail(&log, 800)
+        );
+        let _ = fs::remove_file(&output);
     }
 
     #[test]
